@@ -4,14 +4,19 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: situation-room
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install
-      - run: npm run dist
+      - name: Install
+        run: npm install --no-audit --no-fund
+      - name: Build installer
+        run: npm run dist
       - uses: actions/upload-artifact@v4
         with:
           name: Situation-Room-Setup
-          path: dist/*.exe
+          path: situation-room/dist/*.exe
