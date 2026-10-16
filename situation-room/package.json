@@ -56,11 +56,14 @@
     "publish": [
       {
         "provider": "github",
+        "owner": "Triapyxis",
+        "repo": "Situation-Room-App",
         "releaseType": "release"
       }
     ]
   },
   "dependencies": {
     "electron-updater": "6.3.9"
-  }
+  },
+  "repository": "https://github.com/Triapyxis/Situation-Room-App"
 }
