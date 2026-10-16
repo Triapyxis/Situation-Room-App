@@ -1,0 +1,7 @@
+{
+  "label": "Studio laptop A",
+  "centralUrl": "https://YOUR-SITE.vercel.app",
+  "stationKey": "sr_PASTE_THE_KEY_FROM_ADMIN_HERE",
+  "port": 4010,
+  "pollSeconds": 5
+}

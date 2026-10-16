@@ -1,0 +1,168 @@
+// Situation Room: a standalone laptop app. Serves the console + output pages on THIS laptop only, keeps its own
+// programme state, and pulls display data from the central system (read-only) using this laptop's station key.
+import http from "node:http";
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import path from "node:path";
+import os from "node:os";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { defaultProgramme, sanitize } from "./public/programme.js";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url)), PUB = path.join(HERE, "public");
+const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json" };
+
+export function loadConfig(env = process.env, dir = env.SR_CONFIG_DIR || HERE) {
+  const file = path.join(dir, "config.json"); let c = {}; if (existsSync(file)) { try { c = JSON.parse(readFileSync(file, "utf8")); } catch { /* reported as not configured */ } }
+  return { centralUrl: String(env.CENTRAL_URL || c.centralUrl || "").replace(/\/+$/, ""), stationKey: String(env.STATION_KEY || c.stationKey || ""), label: String(c.label || env.STATION_LABEL || "This laptop"),
+    port: Number(env.PORT ?? c.port ?? 4010), pollSeconds: Math.max(2, Number(c.pollSeconds || 5)), dataDir: c.dataDir || path.join(dir, "data"), configFile: file, autoUpdate: c.autoUpdate !== false,
+    share: c.share === true, shareToken: /^[A-Za-z0-9_-]{20,64}$/.test(c.shareToken ?? "") ? c.shareToken : "", sharePort: Number.isInteger(c.sharePort) ? c.sharePort : 4011 };
+}
+
+/** Validates the Settings form. The station key is optional on later saves (blank keeps the current one). */
+export function validateSettings(b, current = {}) {
+  const errors = [], v = {}; v.label = String(b?.label ?? "").trim();
+  if (v.label.length < 1 || v.label.length > 60) errors.push("Give this laptop a name of 1 to 60 characters.");
+  try {
+    const u = new URL(String(b?.centralUrl ?? "").trim()), local = u.hostname === "127.0.0.1" || u.hostname === "localhost";
+    if (!(u.protocol === "https:" || (u.protocol === "http:" && local)) || u.search || u.hash || u.username || u.password) throw new Error("bad");
+    v.centralUrl = u.origin + u.pathname.replace(/\/+$/, "");
+  } catch { errors.push("The central address must be a web address starting with https://"); }
+  const key = String(b?.stationKey ?? "").trim();
+  if (key) { if (/^sr_[A-Za-z0-9_-]{43}$/.test(key)) v.stationKey = key; else errors.push("That does not look like a station key. It starts with sr_ and is 46 characters long."); }
+  else { v.stationKey = current.stationKey || ""; if (!v.stationKey) errors.push("A station key is required."); }
+  v.share = typeof b?.share === "boolean" ? b.share : current.share === true;
+  v.autoUpdate = typeof b?.autoUpdate === "boolean" ? b.autoUpdate : current.autoUpdate !== false;
+  return { errors, values: v };
+}
+
+export async function startServer(cfg, hooks = {}) {
+  let lan = null, shareError = null;                                  // optional output-only listener for OBS on OTHER computers
+  const newToken = () => randomBytes(24).toString("base64url");
+  const saveConfig = async () => { if (cfg.configFile) await writeFile(cfg.configFile, JSON.stringify({ label: cfg.label, centralUrl: cfg.centralUrl, stationKey: cfg.stationKey, port: cfg.port, pollSeconds: cfg.pollSeconds, autoUpdate: cfg.autoUpdate !== false, share: cfg.share === true, shareToken: cfg.shareToken || "", sharePort: cfg.sharePort ?? 4011 }, null, 2), { mode: 0o600 }); };
+  let update = { state: "unavailable", message: "Updates work in the installed app only.", current: null };
+  const feed = { data: null, lastOkAt: null, lastError: null, authError: false }, STALE_MS = 30_000;
+  const pfile = path.join(cfg.dataDir, "programme.json"); await mkdir(cfg.dataDir, { recursive: true });
+  let prog = { rev: 0, data: defaultProgramme() };
+  if (existsSync(pfile)) { try { const s = JSON.parse(readFileSync(pfile, "utf8")); prog = { rev: Number(s.rev) || 0, data: sanitize(s.data) }; } catch { /* start fresh */ } }
+  let freeze = null; const ffile = path.join(cfg.dataDir, "freeze.json");        // frozen on-air numbers, kept across restarts
+  if (existsSync(ffile)) { try { const f = JSON.parse(readFileSync(ffile, "utf8")); if (f && Number.isFinite(f.at) && f.feed && typeof f.feed === "object" && f.feed.syncedAt) freeze = { at: f.at, feed: f.feed }; } catch { /* unreadable: start live */ } }
+  const saveFreeze = async () => { const tmp = ffile + ".tmp"; await writeFile(tmp, JSON.stringify(freeze)); await rename(tmp, ffile); };
+  const persist = async () => { const tmp = pfile + ".tmp"; await writeFile(tmp, JSON.stringify(prog)); await rename(tmp, pfile); };
+
+  async function pollNow() {
+    if (!cfg.centralUrl || !cfg.stationKey) { feed.lastError = "Not configured: set centralUrl and stationKey in config.json"; return; }
+    try {
+      const r = await fetch(cfg.centralUrl + "/api/feed", { headers: { authorization: `Bearer ${cfg.stationKey}` }, signal: AbortSignal.timeout(8000) });
+      if (r.status === 401) { feed.authError = true; feed.lastError = "The central system rejected this station key"; return; }
+      if (!r.ok) { feed.lastError = `Central system returned ${r.status}`; return; }
+      const j = await r.json(); if (!j || typeof j !== "object" || !j.syncedAt) { feed.lastError = "Unexpected reply from the central system"; return; }
+      Object.assign(feed, { data: j, lastOkAt: Date.now(), lastError: null, authError: false });
+    } catch (e) { feed.lastError = "Cannot reach the central system"; }   // last good data is KEPT and marked stale, never discarded or guessed
+  }
+  const shareView = () => {
+    if (cfg.share !== true) return { enabled: false, error: null, urls: [] };
+    const port = lan ? lan.address().port : cfg.sharePort, ips = Object.values(os.networkInterfaces()).flat().filter((i) => i && (i.family === "IPv4" || i.family === 4) && !i.internal).map((i) => i.address);
+    const u = (ip) => `http://${ip}:${port}/o/${cfg.shareToken}/output.html`;
+    return { enabled: !!lan, error: shareError, port, token: cfg.shareToken, urls: ips.map((ip) => ({ ip, program: u(ip), overlay: u(ip) + "?layer=overlay" })) };
+  };
+  const OUT_FILES = new Set(["output.html", "output.js", "monitor.js", "scenes.js", "styles.css", "ng-map.json"]);          // the ONLY files other computers can fetch
+  const sameToken = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && timingSafeEqual(x, y); };
+  const outputPayload = () => ({ programme: prog.data, feed: freeze ? freeze.feed : feed.data, frozen: !!freeze });
+  async function lanHandler(req, res) {
+    const nf = () => { res.writeHead(404); res.end(); };                                  // wrong token and unknown path look identical: nothing to probe
+    try {
+      if (req.method !== "GET") { res.writeHead(405); return res.end(); }
+      const m = /^\/o\/([A-Za-z0-9_-]{20,64})\/([A-Za-z0-9_.\-\/]*)$/.exec(new URL(req.url, "http://x").pathname);
+      if (!m || !cfg.shareToken || !sameToken(m[1], cfg.shareToken)) return nf();
+      if (m[2] === "api/output") return send(res, 200, outputPayload());
+      if (!OUT_FILES.has(m[2])) return nf();
+      const data = await readFile(path.join(PUB, m[2])).catch(() => null); if (!data) return nf();
+      res.writeHead(200, { "content-type": TYPES[path.extname(m[2])] || "application/octet-stream", "cache-control": "no-store" }); res.end(data);
+    } catch { try { nf(); } catch { /* gone */ } }
+  }
+  async function closeLan() { if (lan) { const l = lan; lan = null; l.closeAllConnections?.(); await new Promise((r) => l.close(r)); } }
+  async function applyShare() {
+    await closeLan(); shareError = null; if (cfg.share !== true) return;
+    if (!cfg.shareToken) cfg.shareToken = newToken();
+    const port = Number.isInteger(cfg.sharePort) ? cfg.sharePort : 4011;
+    if (port !== 0 && server.address() && port === server.address().port) { shareError = "The sharing port must differ from the console port"; return; }
+    const l = http.createServer(lanHandler);
+    try { await new Promise((res, rej) => { l.once("error", rej); l.listen(port, "0.0.0.0", res); }); lan = l; }
+    catch (e) { shareError = e && e.code === "EADDRINUSE" ? `Port ${port} is already in use` : "Could not start sharing"; }
+  }
+  const view = () => ({ configured: !!(cfg.centralUrl && cfg.stationKey), label: cfg.label, centralUrl: cfg.centralUrl, lastOkAt: feed.lastOkAt, lastError: feed.lastError, authError: feed.authError, stale: !feed.lastOkAt || Date.now() - feed.lastOkAt > STALE_MS, update, frozenAt: freeze ? freeze.at : null, share: shareView() });
+
+  const body = (req) => new Promise((res, rej) => { let b = ""; req.on("data", (c) => { b += c; if (b.length > 65536) { rej(new Error("too large")); req.destroy(); } }); req.on("end", () => res(b)); req.on("error", rej); });
+  const send = (res, code, obj) => { res.writeHead(code, { "content-type": "application/json", "cache-control": "no-store" }); res.end(JSON.stringify(obj)); };
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      const host = (req.headers.host || "").split(":")[0];
+      if (host !== "127.0.0.1" && host !== "localhost") return send(res, 403, { error: "Local access only." });   // blocks DNS-rebinding
+      const url = new URL(req.url, "http://localhost");
+      if (req.method !== "GET" && req.method !== "HEAD") {                       // other websites open in this browser must not be able to change anything
+        const o = req.headers.origin, p = server.address().port;
+        if (o !== `http://127.0.0.1:${p}` && o !== `http://localhost:${p}`) return send(res, 403, { error: "Cross-origin request refused." });
+      }
+      if (url.pathname === "/api/config") {
+        if (req.method === "GET") return send(res, 200, { label: cfg.label, centralUrl: cfg.centralUrl, keySet: !!cfg.stationKey, autoUpdate: cfg.autoUpdate !== false, share: cfg.share === true });   // the key itself is never sent back
+        if (req.method !== "PUT") return send(res, 405, { error: "Method not allowed." });
+        if (!cfg.configFile) return send(res, 501, { error: "Saving settings is not available." });
+        let b; try { b = JSON.parse(await body(req)); } catch { return send(res, 400, { error: "Invalid JSON." }); }
+        const r = validateSettings(b, cfg); if (r.errors.length) return send(res, 422, { errors: r.errors });
+        const changed = r.values.centralUrl !== cfg.centralUrl || r.values.stationKey !== cfg.stationKey;
+        Object.assign(cfg, r.values);
+        await applyShare(); await saveConfig();
+        if (changed) { Object.assign(feed, { data: null, lastOkAt: null, lastError: null, authError: false }); if (freeze) { freeze = null; await saveFreeze(); } }   // a new source never inherits the old source's frozen figures          // never show the old source's figures under a new source
+        await pollNow(); return send(res, 200, { ok: true, ...view() });
+      }
+      if (url.pathname === "/api/update/check" && req.method === "POST") {
+        if (!hooks.checkUpdates) return send(res, 200, { ok: false, ...view() });
+        Promise.resolve(hooks.checkUpdates()).catch(() => {}); return send(res, 202, { ok: true });
+      }
+      if (url.pathname === "/api/update/install" && req.method === "POST") {                 // only ever on an explicit click, and only when an update is already downloaded
+        if (update.state !== "ready" || !hooks.installUpdate) return send(res, 409, { error: "No update is ready to install." });
+        send(res, 200, { ok: true }); setTimeout(() => hooks.installUpdate(), 300); return;
+      }
+      if (url.pathname === "/api/freeze" && req.method === "POST") {
+        let b; try { b = JSON.parse(await body(req)); } catch { return send(res, 400, { error: "Invalid JSON." }); }
+        if (b.on === true) { if (!freeze) { if (!feed.data) return send(res, 409, { error: "There is no data to freeze yet." }); freeze = { at: Date.now(), feed: structuredClone(feed.data) }; await saveFreeze(); } }
+        else if (b.on === false) { if (freeze) { freeze = null; await saveFreeze(); } }
+        else return send(res, 422, { error: "on must be true or false." });
+        return send(res, 200, { ok: true, frozenAt: freeze ? freeze.at : null });
+      }
+      if (url.pathname === "/api/output") return send(res, 200, outputPayload());                  // what the output page draws (same payload other computers get)
+      if (url.pathname === "/api/share/regenerate" && req.method === "POST") {
+        if (cfg.share !== true) return send(res, 409, { error: "Sharing is off." });
+        cfg.shareToken = newToken(); await saveConfig(); return send(res, 200, { ok: true, share: shareView() });   // old addresses stop working at once
+      }
+      if (url.pathname === "/api/status") return send(res, 200, view());
+      if (url.pathname === "/api/feed") return send(res, 200, { feed: feed.data, program: freeze ? freeze.feed : feed.data, ...view() });   // feed = live (Preview), program = what goes on air
+      if (url.pathname === "/api/programme") {
+        if (req.method === "GET") return send(res, 200, { rev: prog.rev, programme: prog.data });
+        if (req.method === "PUT") {
+          let b; try { b = JSON.parse(await body(req)); } catch { return send(res, 400, { error: "Invalid JSON." }); }
+          if (b.rev !== prog.rev) return send(res, 409, { rev: prog.rev, programme: prog.data });          // stale tab: adopt the current state
+          prog = { rev: prog.rev + 1, data: sanitize(b.programme) }; await persist(); return send(res, 200, { rev: prog.rev, programme: prog.data });
+        }
+        return send(res, 405, { error: "Method not allowed." });
+      }
+      if (req.method !== "GET") return send(res, 405, { error: "Method not allowed." });
+      const rel = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname), file = path.join(PUB, rel);
+      if (!file.startsWith(PUB + path.sep)) return send(res, 403, { error: "Forbidden." });
+      const data = await readFile(file).catch(() => null);
+      if (!data) return send(res, 404, { error: "Not found." });
+      res.writeHead(200, { "content-type": TYPES[path.extname(file)] || "application/octet-stream", "cache-control": "no-cache" }); res.end(data);
+    } catch { try { send(res, 500, { error: "Server error." }); } catch { /* connection gone */ } }
+  });
+  await new Promise((r) => server.listen(cfg.port, "127.0.0.1", r));
+  await applyShare(); if (cfg.share === true) await saveConfig(); await pollNow(); const timer = setInterval(pollNow, cfg.pollSeconds * 1000); timer.unref();
+  return { port: server.address().port, pollNow, setUpdate: (u) => { update = { ...update, ...u }; }, close: async () => { clearInterval(timer); await closeLan(); await new Promise((r) => server.close(r)); } };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const cfg = loadConfig(); const s = await startServer(cfg);
+  console.log(`\nSituation Room (${cfg.label}) is running.\n  Console:  http://127.0.0.1:${s.port}/\n  OBS/vMix: http://127.0.0.1:${s.port}/output.html\n  Overlay:  http://127.0.0.1:${s.port}/output.html?layer=overlay\n`);
+  if (!cfg.centralUrl || !cfg.stationKey) console.log("NOT CONFIGURED: copy config.example.json to config.json and fill in centralUrl and stationKey.\n");
+}
