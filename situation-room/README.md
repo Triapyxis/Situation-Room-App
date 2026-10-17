@@ -39,6 +39,13 @@ Use **network sharing** (off by default): Settings > "Let OBS on another compute
 - Not NDI: this is a web page that OBS draws. If you need a true NDI video source (for example vMix on another machine), that is separate work.
 - The two computers must be able to reach each other (some guest or hotel networks block this). If OBS shows a blank source, test the address in a browser on the OBS computer first.
 
+## Multiview, composite scenes, transitions, and cloud video library
+- **Multiview Monitor** is an optional panel that can monitor 2, 4, 6, or 8 existing scenes. Selecting a tile and pressing “Load into Preview” does not put it on air.
+- **Scene Composition** creates a reusable scene made from existing scenes, text, images, and videos. Set each layer's X/Y/width/height percentages, save it, preview it, and then transition it to Program. Video library items can be added with their trusted cloud recording metadata.
+- Available transitions include Cut, Crossfade, Fade to black/color, Slide, Push, Wipe, Zoom, Morph, and Stinger. Morph animates matching composition layers; when scenes have no matching layers, it falls back to a crossfade. These are browser-rendered effects, not a claim of frame-accurate broadcast hardware transitions.
+- The cloud library uses the authenticated **Cloud media API path** in Settings (default `/api/media-library`). The central system must expose this API using the same station-key Bearer authorization and return an array or `{ "items": [...] }`, `{ "videos": [...] }`, or `{ "media": [...] }`. Each item should contain `id`, `title`/`name`, and a direct or signed `url` (`url`, `signedUrl`, `playbackUrl`, or `publicUrl`). Use `recordingAt` or `recording_at` for the original recording timestamp, `uploadedAt`/`uploaded_at` for upload time, `location` for actual source metadata, and optionally `duration` and `thumbnail`. The endpoint must return authorized video URLs; this laptop app does not hold a Supabase service-role key and does not generate signed storage URLs itself.
+- The recording overlay uses only trusted recording metadata returned by that cloud endpoint. It does not substitute cloud upload time or the computer clock. Missing recording timestamps display “Recording time unavailable.” The configured endpoint must be implemented on the central application for cloud videos to appear; a 404 is reported instead of mock data.
+
 ## What it can and cannot see
 Public results, seats led, reporting progress and projections an administrator has RELEASED. No agents, locations, submissions or accounts.
 A lost laptop is cut off by revoking its key in the central Admin.

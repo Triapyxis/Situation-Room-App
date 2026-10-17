@@ -1,3 +1,4 @@
+import { SCENES } from "./programme.js";
 // Renders each scene as HTML for a 1920x1080 stage. Only data from the central feed is shown; missing data says so.
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const n = (v) => Number(v).toLocaleString("en-NG");
@@ -46,8 +47,35 @@ function projection(f) {
   const max = Math.max(1, ...P.shares.map((s) => s.share));
   return sc("ESTIMATE, NOT A RESULT", P.contest, `<div class="col">${P.shares.slice(0, 8).map((s) => `<div class="row"><div class="n">${esc(s.party)}</div>${bar("#E0A800", (s.share / max) * 100)}<div class="v">about ${s.share.toFixed(1)}%<small></small></div></div>`).join("")}<div class="cap" style="margin-top:20px">Projected from ${P.coverage.statesIncluded} of ${P.coverage.statesTotal} states. Not an official declaration.</div></div>`, `Produced ${new Date(P.createdAt).toLocaleTimeString("en-NG")}`);
 }
-export function renderScene(id, f, prog) {
+const timeLabel = (value) => {
+  if (!value || !Number.isFinite(Date.parse(value))) return "Recording time unavailable";
+  return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "medium", timeZone: "Africa/Lagos" }).format(new Date(value)) + " WAT";
+};
+function renderComposition(scene, f, prog, depth = 0) {
+  if (depth > 3) return `<div class="sc"><div class="center"><h1>Nested scene limit reached</h1></div></div>`;
+  const bg = /^#[0-9a-fA-F]{6}$/.test(scene.background || "") ? scene.background : "#071a25";
+  const layers = (scene.layers || []).filter((l) => l.visible !== false).sort((a, b) => a.z - b.z).map((l) => {
+    const x = l.x * 19.2, y = l.y * 10.8, w = l.w * 19.2, h = l.h * 10.8;
+    const style = `left:${x}px;top:${y}px;width:${w}px;height:${h}px;z-index:${l.z};`;
+    if (l.type === "text") return `<div class="comp-layer comp-text" data-layer-id="${esc(l.id)}" data-morph-key="${esc(`text:${l.label || l.text}`)}" style="${style}"><div>${esc(l.text)}</div></div>`;
+    if (l.type === "image") return `<div class="comp-layer" data-layer-id="${esc(l.id)}" data-morph-key="${esc(`image:${l.url}`)}" style="${style}"><img src="${esc(l.url)}" alt="${esc(l.label)}" style="object-fit:${l.fit};width:100%;height:100%">${l.showLocation && l.location && prog?.graphics?.videoLocation !== false ? `<span class="media-location">${esc(l.location)}</span>` : ""}</div>`;
+    if (l.type === "video") {
+      const ts = prog?.graphics?.videoTimestamp !== false && l.showTimestamp !== false ? `<span class="media-timestamp">${esc(timeLabel(l.recordingAt, prog?.graphics?.videoTimezone || "Africa/Lagos"))}</span>` : "";
+      const loc = prog?.graphics?.videoLocation !== false && l.showLocation !== false && l.location ? `<span class="media-location">${esc(l.location)}</span>` : "";
+      return `<div class="comp-layer comp-video" data-layer-id="${esc(l.id)}" data-morph-key="${esc(`video:${l.url}`)}" style="${style}"><video src="${esc(l.url)}" ${l.muted !== false ? "muted" : ""} ${l.loop ? "loop" : ""} autoplay playsinline preload="metadata" style="object-fit:${l.fit};width:100%;height:100%"></video><div class="media-meta">${ts}${loc}</div></div>`;
+    }
+    if (l.type === "scene") {
+      const nested = (prog?.customScenes || []).find((s) => s.id === l.sourceScene);
+      const content = nested ? renderComposition(nested, f, prog, depth + 1) : renderScene(l.sourceScene, f, prog, depth + 1);
+      return `<div class="comp-layer comp-scene-layer" data-layer-id="${esc(l.id)}" data-morph-key="${esc(`scene:${l.sourceScene}`)}" style="${style}"><div class="comp-scene-scale" style="transform:scale(${l.w / 100},${l.h / 100})">${content}</div></div>`;
+    }
+    return "";
+  }).join("");
+  return `<div class="sc composition" style="background:${bg};padding:0">${layers || `<div class="center"><h1>${esc(scene.name || "Empty composition")}</h1><div class="cap">Add layers in the Composition panel</div></div>`}</div>`;
+}
+export function renderScene(id, f, prog, depth = 0) {
   const b = prog?.branding ?? {};
+  if (!(id in SCENES)) { const custom = (prog?.customScenes || []).find((s) => s.id === id); if (custom) return renderComposition(custom, f, prog, depth); }
   switch (id) {
     case "title": return `<div class="sc"><div class="center"><div class="eb">${esc(b.election)}</div><h1 style="font-size:110px">${esc(b.title)}</h1></div></div>`;
     case "national": return national(f); case "president": return president(f); case "map": return map(f);

@@ -16,7 +16,7 @@ export function loadConfig(env = process.env, dir = env.SR_CONFIG_DIR || HERE) {
   const file = path.join(dir, "config.json"); let c = {}; if (existsSync(file)) { try { c = JSON.parse(readFileSync(file, "utf8")); } catch { /* reported as not configured */ } }
   return { centralUrl: String(env.CENTRAL_URL || c.centralUrl || "").replace(/\/+$/, ""), stationKey: String(env.STATION_KEY || c.stationKey || ""), label: String(c.label || env.STATION_LABEL || "This laptop"),
     port: Number(env.PORT ?? c.port ?? 4010), pollSeconds: Math.max(2, Number(c.pollSeconds || 5)), dataDir: c.dataDir || path.join(dir, "data"), configFile: file, autoUpdate: c.autoUpdate !== false,
-    share: c.share === true, shareToken: /^[A-Za-z0-9_-]{20,64}$/.test(c.shareToken ?? "") ? c.shareToken : "", sharePort: Number.isInteger(c.sharePort) ? c.sharePort : 4011 };
+    mediaPath: typeof c.mediaPath === "string" && /^\/api\/[A-Za-z0-9_/-]{1,100}$/.test(c.mediaPath) ? c.mediaPath : "/api/media-library", share: c.share === true, shareToken: /^[A-Za-z0-9_-]{20,64}$/.test(c.shareToken ?? "") ? c.shareToken : "", sharePort: Number.isInteger(c.sharePort) ? c.sharePort : 4011 };
 }
 
 /** Validates the Settings form. The station key is optional on later saves (blank keeps the current one). */
@@ -32,6 +32,7 @@ export function validateSettings(b, current = {}) {
   if (key) { if (/^sr_[A-Za-z0-9_-]{43}$/.test(key)) v.stationKey = key; else errors.push("That does not look like a station key. It starts with sr_ and is 46 characters long."); }
   else { v.stationKey = current.stationKey || ""; if (!v.stationKey) errors.push("A station key is required."); }
   v.share = typeof b?.share === "boolean" ? b.share : current.share === true;
+  v.mediaPath = String(b?.mediaPath ?? current.mediaPath ?? "/api/media-library").trim(); if (!/^\/api\/[A-Za-z0-9_/-]{1,100}$/.test(v.mediaPath) || v.mediaPath.includes("..")) errors.push("Cloud media endpoint must be a local API path beginning /api/.");
   v.autoUpdate = typeof b?.autoUpdate === "boolean" ? b.autoUpdate : current.autoUpdate !== false;
   return { errors, values: v };
 }
@@ -39,7 +40,8 @@ export function validateSettings(b, current = {}) {
 export async function startServer(cfg, hooks = {}) {
   let lan = null, shareError = null;                                  // optional output-only listener for OBS on OTHER computers
   const newToken = () => randomBytes(24).toString("base64url");
-  const saveConfig = async () => { if (cfg.configFile) await writeFile(cfg.configFile, JSON.stringify({ label: cfg.label, centralUrl: cfg.centralUrl, stationKey: cfg.stationKey, port: cfg.port, pollSeconds: cfg.pollSeconds, autoUpdate: cfg.autoUpdate !== false, share: cfg.share === true, shareToken: cfg.shareToken || "", sharePort: cfg.sharePort ?? 4011 }, null, 2), { mode: 0o600 }); };
+  const saveConfig = async () => { if (cfg.configFile) await writeFile(cfg.configFile, JSON.stringify({ label: cfg.label, centralUrl: cfg.centralUrl, stationKey: cfg.stationKey, port: cfg.port, pollSeconds: cfg.pollSeconds, autoUpdate: cfg.autoUpdate !== false, mediaPath: cfg.mediaPath || "/api/media-library", share: cfg.share === true, shareToken: cfg.shareToken || "", sharePort: cfg.sharePort ?? 4011 }, null, 2), { mode: 0o600 }); };
+  let mediaCache = { at: 0, items: [], error: "Cloud media library has not been loaded." };
   let update = { state: "unavailable", message: "Updates work in the installed app only.", current: null };
   const feed = { data: null, lastOkAt: null, lastError: null, authError: false }, STALE_MS = 30_000;
   const pfile = path.join(cfg.dataDir, "programme.json"); await mkdir(cfg.dataDir, { recursive: true });
@@ -51,7 +53,7 @@ export async function startServer(cfg, hooks = {}) {
   const persist = async () => { const tmp = pfile + ".tmp"; await writeFile(tmp, JSON.stringify(prog)); await rename(tmp, pfile); };
 
   async function pollNow() {
-    if (!cfg.centralUrl || !cfg.stationKey) { feed.lastError = "Not configured: set centralUrl and stationKey in config.json"; return; }
+    if (!cfg.centralUrl || !cfg.stationKey) { feed.lastError = "Not configured: open Settings and enter the central address and station key"; return; }
     try {
       const r = await fetch(cfg.centralUrl + "/api/feed", { headers: { authorization: `Bearer ${cfg.stationKey}` }, signal: AbortSignal.timeout(8000) });
       if (r.status === 401) { feed.authError = true; feed.lastError = "The central system rejected this station key"; return; }
@@ -66,9 +68,37 @@ export async function startServer(cfg, hooks = {}) {
     const u = (ip) => `http://${ip}:${port}/o/${cfg.shareToken}/output.html`;
     return { enabled: !!lan, error: shareError, port, token: cfg.shareToken, urls: ips.map((ip) => ({ ip, program: u(ip), overlay: u(ip) + "?layer=overlay" })) };
   };
-  const OUT_FILES = new Set(["output.html", "output.js", "monitor.js", "scenes.js", "styles.css", "ng-map.json"]);          // the ONLY files other computers can fetch
+  const OUT_FILES = new Set(["output.html", "output.js", "monitor.js", "scenes.js", "programme.js", "styles.css", "ng-map.json"]);          // the ONLY files other computers can fetch
   const sameToken = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && timingSafeEqual(x, y); };
   const outputPayload = () => ({ programme: prog.data, feed: freeze ? freeze.feed : feed.data, frozen: !!freeze });
+  const cleanMediaItems = (payload) => {
+    const rows = Array.isArray(payload) ? payload : Array.isArray(payload?.items) ? payload.items : Array.isArray(payload?.videos) ? payload.videos : Array.isArray(payload?.media) ? payload.media : [];
+    return rows.slice(0, 500).map((x, i) => {
+      if (!x || typeof x !== "object") return null;
+      const url = [x.url, x.signedUrl, x.signed_url, x.playbackUrl, x.playback_url, x.publicUrl, x.public_url].find((v) => typeof v === "string" && /^https?:\/\//i.test(v));
+      if (!url) return null;
+      const mime = String(x.mimeType || x.mime_type || x.contentType || x.content_type || "").toLowerCase();
+      if (mime && !mime.startsWith("video/")) return null;
+      const metadata = x.metadata && typeof x.metadata === "object" ? x.metadata : {};
+      const recorded = x.recordingAt || x.recording_at || x.recordedAt || x.recorded_at || x.recordingTimestamp || x.recording_timestamp || x.originalRecordedAt || x.original_recorded_at || metadata.recordingAt || metadata.recording_at || metadata.recordedAt || metadata.recorded_at || metadata.recordingTimestamp || metadata.recording_timestamp || metadata.captureTime || "";
+      const uploaded = x.uploadedAt || x.uploaded_at || x.storageUploadedAt || x.storage_uploaded_at || "";
+      const validDate = (v) => v && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : "";
+      return { id: String(x.id || x.path || x.key || `media-${i}`).slice(0, 160), title: String(x.title || x.name || x.filename || `Video ${i + 1}`).slice(0, 180), url,
+        recordingAt: validDate(recorded), uploadAt: validDate(uploaded), location: String(x.location || metadata.location || "").slice(0, 180), duration: x.duration != null && Number.isFinite(Number(x.duration)) ? Math.max(0, Number(x.duration)) : null,
+        thumbnail: typeof (x.thumbnail || x.thumbnailUrl || x.thumbnail_url) === "string" && /^https?:\/\//i.test(x.thumbnail || x.thumbnailUrl || x.thumbnail_url) ? (x.thumbnail || x.thumbnailUrl || x.thumbnail_url) : "" };
+    }).filter(Boolean);
+  };
+  async function getMediaLibrary(force = false) {
+    if (!cfg.centralUrl || !cfg.stationKey) return { ok: false, items: [], error: "Configure the central system before loading cloud media." };
+    if (!force && Date.now() - mediaCache.at < 30000) return { ok: !mediaCache.error, items: mediaCache.items, error: mediaCache.error };
+    try {
+      const r = await fetch(cfg.centralUrl + (cfg.mediaPath || "/api/media-library"), { headers: { authorization: `Bearer ${cfg.stationKey}` }, signal: AbortSignal.timeout(10000), cache: "no-store" });
+      if (!r.ok) throw new Error(r.status === 404 ? "The central system does not expose the configured cloud media endpoint yet." : `Cloud media endpoint returned ${r.status}.`);
+      const payload = await r.json();
+      if (!Array.isArray(payload) && !Array.isArray(payload?.items) && !Array.isArray(payload?.videos) && !Array.isArray(payload?.media)) throw new Error("Cloud media endpoint returned an unsupported response format.");
+      mediaCache = { at: Date.now(), items: cleanMediaItems(payload), error: "" }; return { ok: true, items: mediaCache.items, error: "" };
+    } catch (e) { mediaCache = { at: Date.now(), items: mediaCache.items, error: String(e?.message || "Could not load cloud media.").slice(0, 220) }; return { ok: false, items: mediaCache.items, error: mediaCache.error }; }
+  }
   async function lanHandler(req, res) {
     const nf = () => { res.writeHead(404); res.end(); };                                  // wrong token and unknown path look identical: nothing to probe
     try {
@@ -106,17 +136,18 @@ export async function startServer(cfg, hooks = {}) {
         if (o !== `http://127.0.0.1:${p}` && o !== `http://localhost:${p}`) return send(res, 403, { error: "Cross-origin request refused." });
       }
       if (url.pathname === "/api/config") {
-        if (req.method === "GET") return send(res, 200, { label: cfg.label, centralUrl: cfg.centralUrl, keySet: !!cfg.stationKey, autoUpdate: cfg.autoUpdate !== false, share: cfg.share === true });   // the key itself is never sent back
+        if (req.method === "GET") return send(res, 200, { label: cfg.label, centralUrl: cfg.centralUrl, mediaPath: cfg.mediaPath || "/api/media-library", keySet: !!cfg.stationKey, autoUpdate: cfg.autoUpdate !== false, share: cfg.share === true });   // the key itself is never sent back
         if (req.method !== "PUT") return send(res, 405, { error: "Method not allowed." });
         if (!cfg.configFile) return send(res, 501, { error: "Saving settings is not available." });
         let b; try { b = JSON.parse(await body(req)); } catch { return send(res, 400, { error: "Invalid JSON." }); }
         const r = validateSettings(b, cfg); if (r.errors.length) return send(res, 422, { errors: r.errors });
-        const changed = r.values.centralUrl !== cfg.centralUrl || r.values.stationKey !== cfg.stationKey;
-        Object.assign(cfg, r.values);
+        const changed = r.values.centralUrl !== cfg.centralUrl || r.values.stationKey !== cfg.stationKey; const mediaChanged = changed || r.values.mediaPath !== cfg.mediaPath;
+        Object.assign(cfg, r.values); if (mediaChanged) mediaCache = { at: 0, items: [], error: "Cloud media library has not been loaded." };
         await applyShare(); await saveConfig();
         if (changed) { Object.assign(feed, { data: null, lastOkAt: null, lastError: null, authError: false }); if (freeze) { freeze = null; await saveFreeze(); } }   // a new source never inherits the old source's frozen figures          // never show the old source's figures under a new source
         await pollNow(); return send(res, 200, { ok: true, ...view() });
       }
+      if (url.pathname === "/api/media-library" && req.method === "GET") return send(res, 200, await getMediaLibrary(url.searchParams.get("refresh") === "1"));
       if (url.pathname === "/api/update/check" && req.method === "POST") {
         if (!hooks.checkUpdates) return send(res, 200, { ok: false, ...view() });
         Promise.resolve(hooks.checkUpdates()).catch(() => {}); return send(res, 202, { ok: true });
