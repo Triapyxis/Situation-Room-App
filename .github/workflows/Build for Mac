@@ -1,0 +1,36 @@
+name: Build Mac Installer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+
+    defaults:
+      run:
+        working-directory: situation-room
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build Mac application
+        run: npm run dist -- --mac
+
+      - name: Upload Mac installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Situation-Room-Mac
+          path: |
+            situation-room/dist/*.dmg
+            situation-room/dist/*.zip
+          if-no-files-found: error
