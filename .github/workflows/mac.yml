@@ -1,0 +1,58 @@
+
+name: Build installer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: situation-room
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build Windows installer
+        run: npm run dist
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Situation-Room-Windows
+          path: situation-room/dist/*.exe
+          if-no-files-found: error
+
+  build-mac:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: situation-room
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build Mac application
+        run: npm run dist -- --mac
+
+      - name: Upload Mac DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Situation-Room-Mac
+          path: situation-room/dist/*.dmg
+          if-no-files-found: error
