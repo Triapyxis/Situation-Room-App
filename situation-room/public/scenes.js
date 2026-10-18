@@ -60,7 +60,9 @@ function renderComposition(scene, f, prog, depth = 0) {
     if (l.type === "text") return `<div class="comp-layer comp-text" data-layer-id="${esc(l.id)}" data-morph-key="${esc(`text:${l.label || l.text}`)}" style="${style}"><div>${esc(l.text)}</div></div>`;
     if (l.type === "image") return `<div class="comp-layer" data-layer-id="${esc(l.id)}" data-morph-key="${esc(`image:${l.url}`)}" style="${style}"><img src="${esc(l.url)}" alt="${esc(l.label)}" style="object-fit:${l.fit};width:100%;height:100%">${l.showLocation && l.location && prog?.graphics?.videoLocation !== false ? `<span class="media-location">${esc(l.location)}</span>` : ""}</div>`;
     if (l.type === "video") {
-      const ts = prog?.graphics?.videoTimestamp !== false && l.showTimestamp !== false ? `<span class="media-timestamp">${esc(timeLabel(l.recordingAt, prog?.graphics?.videoTimezone || "Africa/Lagos"))}</span>` : "";
+      const tsLabel = l.timestampStatus === "verified" ? "VERIFIED" : l.timestampStatus === "conflict" ? "TIME CONFLICT — VERIFY" : l.timestampStatus === "unavailable" ? "RECORDING TIME UNAVAILABLE" : "UNVERIFIED — VERIFY BEFORE AIR";
+      const shownTime = l.timestampStatus === "unavailable" ? "RECORDING TIME UNAVAILABLE" : `${timeLabel(l.recordingAt, prog?.graphics?.videoTimezone || "Africa/Lagos")} · ${tsLabel}`;
+      const ts = prog?.graphics?.videoTimestamp !== false && l.showTimestamp !== false ? `<span class="media-timestamp">${esc(shownTime)}</span>` : "";
       const loc = prog?.graphics?.videoLocation !== false && l.showLocation !== false && l.location ? `<span class="media-location">${esc(l.location)}</span>` : "";
       return `<div class="comp-layer comp-video" data-layer-id="${esc(l.id)}" data-morph-key="${esc(`video:${l.url}`)}" style="${style}"><video src="${esc(l.url)}" ${l.muted !== false ? "muted" : ""} ${l.loop ? "loop" : ""} autoplay playsinline preload="metadata" style="object-fit:${l.fit};width:100%;height:100%"></video><div class="media-meta">${ts}${loc}</div></div>`;
     }

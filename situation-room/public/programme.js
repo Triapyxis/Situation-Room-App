@@ -15,7 +15,7 @@ function cleanLayer(x, i) {
   const type = ["scene", "video", "image", "text"].includes(x?.type) ? x.type : "text";
   return { id: safeId(x?.id) || `layer_${i + 1}`, type, label: str(x?.label, 100, `Layer ${i + 1}`),
     sourceScene: safeId(x?.sourceScene), url: safeUrl(x?.url), text: str(x?.text, 500),
-    recordingAt: safeDate(x?.recordingAt), uploadAt: safeDate(x?.uploadAt), location: str(x?.location, 180),
+    recordingAt: safeDate(x?.recordingAt), uploadAt: safeDate(x?.uploadAt), timestampStatus: ["verified", "unverified", "conflict", "unavailable"].includes(x?.timestampStatus) ? x.timestampStatus : "unavailable", location: str(x?.location, 180),
     showTimestamp: bool(x?.showTimestamp, true), showLocation: bool(x?.showLocation, true), muted: bool(x?.muted, true), loop: bool(x?.loop, false),
     x: Math.max(0, Math.min(100, Number.isFinite(Number(x?.x)) ? Number(x.x) : 0)),
     y: Math.max(0, Math.min(100, Number.isFinite(Number(x?.y)) ? Number(x.y) : 0)),

@@ -1,6 +1,8 @@
 import { SCENES, take } from "./programme.js"; import { Monitor } from "./monitor.js"; import { loadMap } from "./scenes.js";
 const $ = (id) => document.getElementById(id), esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-let rev = 0, prog = null, feed = null, programFeed = null, status = null, mediaItems = [], mediaError = "", editingCompositionId = "", mvInstances = new Map(), mvSetupKey = "", compRenderKey = "", mediaRenderKey = "";   // feed: live (Preview); programFeed: what is on air (frozen or live)
+let rev = 0, prog = null, feed = null, programFeed = null, status = null, mediaItems = [], mediaError = "", editingCompositionId = "", mvInstances = new Map(), mvSetupKey = "", compRenderKey = "", mediaRenderKey = "", cloudMvRenderKey = "", cloudViewMode = "grid", cloudLabelLimit = 100;
+try { cloudViewMode = localStorage.getItem("sr-cloud-video-view") === "label" ? "label" : "grid"; } catch {}
+// feed: live (Preview); programFeed: what is on air (frozen or live)
 const prev = new Monitor($("mPrev"), { gfx: false }), live = new Monitor($("mLive"));
 const call = async (url, opt) => { try { const r = await fetch(url, opt); return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }; } catch { return { ok: false, status: 0, body: {} }; } };
 
@@ -21,7 +23,7 @@ function render() {
   prev.update({ scene: prog.preview.scene, via: "cut", feed, prog });
   live.update({ scene: prog.live.scene, via: prog.live.via, ms: prog.transition.ms, feed: programFeed ?? feed, prog });
   $("scenes").innerHTML = allScenes().map(({id, name}) => `<li data-id="${esc(id)}" class="${id === prog.preview.scene ? "pvx " : ""}${id === prog.live.scene ? "lvx" : ""}">${esc(name)}</li>`).join("");
-  renderOutputs(); renderMultiview(); renderComposition(); renderMedia();
+  renderOutputs(); renderMultiview(); renderComposition(); renderMedia(); renderCloudMultiview();
 }
 function renderOutputs() {
   const row = (l, u) => `<div class="out"><span>${esc(l)}</span><code>${esc(u)}</code><button data-copy="${esc(u)}">Copy</button> <a href="${esc(u)}" target="_blank" rel="noreferrer">Open</a></div>`, b = location.origin, sh = status?.share;
@@ -68,22 +70,51 @@ function renderComposition() {
   $("compDelete").disabled = !target; $("compPreview").disabled = !target; $("compAdd").disabled = !target;
 }
 function formatCloudTime(v) { if (!v || !Number.isFinite(Date.parse(v))) return "Recording time unavailable"; const tz = prog?.graphics?.videoTimezone || "Africa/Lagos"; return new Intl.DateTimeFormat("en-GB", { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZoneName: "short", timeZone: tz }).format(new Date(v)); }
+function cloudThumbnail(item, label) {
+  // Never open every Supabase video just to make thumbnails. Use a thumbnail URL
+  // supplied by the Supabase-backed API; otherwise show a lightweight placeholder until
+  // the operator explicitly requests playback of that video.
+  const src = item.thumbnail || "";
+  if (src) return `<img src="${esc(src)}" alt="Video thumbnail for ${esc(label)}" loading="lazy" decoding="async">`;
+  return `<div class="media-thumb cloud-thumb-placeholder" role="img" aria-label="Preview available on selection"><span>▶</span><small>Cloud video</small></div>`;
+}
 function renderMedia() {
   if (!prog) return;
   const q = ($("mediaSearch").value || "").trim().toLowerCase(); const items = mediaItems.filter((m) => `${m.title} ${m.location}`.toLowerCase().includes(q));
-  $("mediaStatus").textContent = mediaError || (mediaItems.length ? `${mediaItems.length} cloud video${mediaItems.length === 1 ? "" : "s"} available. Recording time is from cloud recording metadata; upload time is separate.` : "No cloud videos returned by the configured endpoint.");
+  $("mediaStatus").textContent = mediaError || (mediaItems.length ? `${mediaItems.length} cloud video${mediaItems.length === 1 ? "" : "s"} available. Recording timestamps are shown with their verification status.` : "No videos returned by the configured media endpoint.");
   const keyNow = `${q}|${editingCompositionId}|${mediaError}|${JSON.stringify(items)}`; if (keyNow === mediaRenderKey) return; mediaRenderKey = keyNow;
-  $("mediaList").innerHTML = items.map((m) => `<article class="media-item"><div>${m.thumbnail ? `<img src="${esc(m.thumbnail)}" alt="" loading="lazy">` : `<div class="media-thumb"></div>`}</div><div><h4>${esc(m.title)}</h4><p class="recorded">Recorded: ${esc(formatCloudTime(m.recordingAt))}</p><p class="uploaded">Uploaded: ${esc(m.uploadAt ? formatCloudTime(m.uploadAt) : "Unavailable")}</p>${m.location ? `<p>Location: ${esc(m.location)}</p>` : ""}${m.duration != null ? `<p>Duration: ${Math.round(m.duration)} sec</p>` : ""}<div class="btns"><button type="button" data-media-load="${esc(m.id)}">Load into Preview</button><button type="button" data-media-add="${esc(m.id)}" ${editingCompositionId ? "" : "disabled"}>Add to composition</button></div></div></article>`).join("") || `<p class="hint">${mediaError ? esc(mediaError) : "No matching videos."}</p>`;
+  $("mediaList").innerHTML = items.map((m) => `<article class="media-item"><div>${cloudThumbnail(m, m.title)}</div><div><h4>${esc(m.title)}</h4><p class="recorded">Recorded: ${esc(formatCloudTime(m.recordingAt))}</p><p class="hint">Timestamp status: ${esc(m.timestampStatus === "verified" ? "Verified" : m.timestampStatus === "conflict" ? "CONFLICT — VERIFY BEFORE AIR" : m.timestampStatus === "unavailable" ? "Unavailable" : "UNVERIFIED — VERIFY BEFORE AIR")}</p><p>Location: ${esc(m.location || "Location unavailable")}</p><div class="btns"><button type="button" data-media-load="${esc(m.id)}">Load into Preview</button><button type="button" data-media-add="${esc(m.id)}" ${editingCompositionId ? "" : "disabled"}>Add to composition</button></div></div></article>`).join("") || `<p class="hint">${mediaError ? esc(mediaError) : "No matching videos."}</p>`;
 }
 async function loadMediaLibrary(force = false) {
   $("mediaStatus").textContent = "Loading cloud video library…";
   const r = await call(`/api/media-library${force ? "?refresh=1" : ""}`);
   if (r.ok && r.body.ok) { mediaItems = Array.isArray(r.body.items) ? r.body.items : []; mediaError = ""; }
   else mediaError = r.body.error || "Could not load cloud video library.";
-  renderMedia();
+  renderMedia(); renderCloudMultiview();
+}
+function renderCloudMultiview() {
+  const panel = document.querySelector('[data-panel="cloudmultiview"]');
+  if (!panel || panel.classList.contains("closed") || panel.classList.contains("min")) return;
+  const count = Number($("cloudMvCount").value || 4), items = cloudViewMode === "label" ? mediaItems.slice(0, cloudLabelLimit) : mediaItems.slice(0, count);
+  $("cloudMvTilesLabel").hidden = cloudViewMode === "label";
+  $("cloudViewGrid").classList.toggle("on", cloudViewMode === "grid");
+  $("cloudViewLabel").classList.toggle("on", cloudViewMode === "label");
+  $("cloudViewGrid").setAttribute("aria-pressed", String(cloudViewMode === "grid"));
+  $("cloudViewLabel").setAttribute("aria-pressed", String(cloudViewMode === "label"));
+  $("cloudMvStatus").textContent = mediaError || (mediaItems.length ? `${mediaItems.length} cloud video${mediaItems.length === 1 ? "" : "s"} available${cloudViewMode === "grid" ? ` · showing ${items.length} of up to ${count} tiles` : ` · showing ${items.length} of ${mediaItems.length} videos`}.` : "No videos available. Configure the central system or refresh the library.");
+  $("cloudMvMore").hidden = cloudViewMode !== "label" || items.length >= mediaItems.length;
+  const key = `${cloudViewMode}|${count}|${mediaError}|${JSON.stringify(items.map((m) => [m.id,m.title,m.url,m.thumbnail,m.recordingAt,m.location]))}`;
+  if (key === cloudMvRenderKey) return;
+  cloudMvRenderKey = key;
+  const grid = $("cloudMultiviewGrid");
+  grid.classList.toggle("cloud-label-list", cloudViewMode === "label");
+  grid.innerHTML = items.map((m, i) => {
+    if (cloudViewMode === "label") return `<article class="cloud-label-row" data-cloud-tile="${esc(m.id)}"><div class="cloud-label-thumb">${cloudThumbnail(m, m.title)}</div><div class="cloud-label-details"><h4>${esc(m.title)}</h4><p>${esc(m.location || "Location unavailable")}</p><p>Recorded: ${esc(formatCloudTime(m.recordingAt))}</p><p>${esc(m.timestampStatus === "verified" ? "Timestamp verified" : m.timestampStatus === "conflict" ? "TIME CONFLICT — VERIFY" : m.timestampStatus === "unavailable" ? "Recording time unavailable" : "UNVERIFIED TIME — VERIFY")}</p></div><div class="cloud-label-actions"><button type="button" data-cloud-play="${esc(m.id)}">Play / pause</button><button type="button" data-cloud-preview="${esc(m.id)}">Send to Main Preview</button></div></article>`;
+    return `<article class="mv-tile cloud-mv-tile" data-cloud-tile="${esc(m.id)}"><h4>${esc(m.title)}</h4><div class="mini-vp cloud-mv-vp">${cloudThumbnail(m, m.title)}<span class="cloud-tile-overlay">CLOUD ${i+1}</span></div><p class="cloud-mv-meta">${esc(m.location || "Location unavailable")}<br>Recorded: ${esc(formatCloudTime(m.recordingAt))}<br>${esc(m.timestampStatus === "verified" ? "Timestamp verified" : m.timestampStatus === "conflict" ? "TIME CONFLICT — VERIFY" : m.timestampStatus === "unavailable" ? "Recording time unavailable" : "UNVERIFIED TIME — VERIFY")}</p><div class="btns"><button type="button" data-cloud-play="${esc(m.id)}">Play / pause</button><button type="button" data-cloud-preview="${esc(m.id)}">Send to Main Preview</button></div></article>`;
+  }).join("") || `<p class="hint">${esc(mediaError || "No cloud videos to display. Refresh the media library or check the connection settings.")}</p>`;
 }
 function uniqueSceneId(prefix, name) { const slug = String(name || "scene").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 32) || "scene"; let id = `${prefix}_${slug}`, i = 2; while (allScenes().some((s) => s.id === id)) id = `${prefix}_${slug}_${i++}`; return id; }
-function mediaLayer(item, x = 0, y = 0, w = 100, h = 100, z = 0) { return { id: uniqueLayerId(), type: "video", label: item.title, url: item.url, recordingAt: item.recordingAt || "", uploadAt: item.uploadAt || "", location: item.location || "", showTimestamp: true, showLocation: true, muted: true, loop: false, x, y, w, h, z, fit: "contain", locked: false, visible: true }; }
+function mediaLayer(item, x = 0, y = 0, w = 100, h = 100, z = 0) { return { id: uniqueLayerId(), type: "video", label: item.title, url: item.url, recordingAt: item.recordingAt || "", uploadAt: item.uploadAt || "", timestampStatus: item.timestampStatus || "unavailable", location: item.location || "", showTimestamp: true, showLocation: true, muted: true, loop: false, x, y, w, h, z, fit: "contain", locked: false, visible: true }; }
 let layerSeq = 1; function uniqueLayerId() { return `layer_${Date.now().toString(36)}_${layerSeq++}`; }
 async function loadMediaScene(item) {
   const id = uniqueSceneId("video", item.title);
@@ -141,7 +172,9 @@ $("tdir").onchange = () => commit((p) => { p.transition.direction = $("tdir").va
 $("videoTsOn").onchange = () => commit((p) => { p.graphics.videoTimestamp = $("videoTsOn").checked; }); $("videoLocOn").onchange = () => commit((p) => { p.graphics.videoLocation = $("videoLocOn").checked; }); $("videoTimezone").onchange = () => commit((p) => { p.graphics.videoTimezone = $("videoTimezone").value; });
 document.addEventListener("keydown", (e) => { if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.ctrlKey || e.metaKey) return; if (e.key === "t") doTake(); if (e.key === "c") doTake("cut"); if (e.key === "f") toggleFreeze(); });
 $("mvCount").onchange = () => { mvSetupKey = ""; renderMultiview(); };
-$("mediaRefresh").onclick = () => loadMediaLibrary(true); $("mediaSearch").oninput = () => renderMedia();
+$("mediaRefresh").onclick = () => loadMediaLibrary(true); $("mediaSearch").oninput = () => renderMedia(); $("cloudMvRefresh").onclick = () => { cloudLabelLimit = 100; loadMediaLibrary(true); }; $("cloudMvMore").onclick = () => { cloudLabelLimit += 100; cloudMvRenderKey = ""; renderCloudMultiview(); }; $("cloudMvCount").onchange = () => { cloudMvRenderKey = ""; renderCloudMultiview(); };
+function setCloudView(mode) { cloudViewMode = mode === "label" ? "label" : "grid"; cloudLabelLimit = 100; try { localStorage.setItem("sr-cloud-video-view", cloudViewMode); } catch {} cloudMvRenderKey = ""; renderCloudMultiview(); }
+$("cloudViewGrid").onclick = () => setCloudView("grid"); $("cloudViewLabel").onclick = () => setCloudView("label");
 $("compType").onchange = () => renderComposition(); $("compTarget").onchange = () => { editingCompositionId = $("compTarget").value; renderComposition(); renderMedia(); };
 $("compCreate").onclick = () => {
   const name = $("compName").value.trim(); if (!name) { flash("Enter a name for the composition."); return; }
@@ -160,27 +193,30 @@ document.addEventListener("click", (e) => {
   const t = e.target;
   if (t.dataset.mvPreview !== undefined) { const inst = mvInstances.get(Number(t.dataset.mvPreview)); if (inst) commit((p) => { p.preview.scene = inst.scene; }); }
   if (t.dataset.mediaLoad) { const item = mediaItems.find((m) => m.id === t.dataset.mediaLoad); if (item) loadMediaScene(item); }
+  if (t.dataset.cloudPreview) { const item = mediaItems.find((m) => m.id === t.dataset.cloudPreview); if (item) loadMediaScene(item); }
+  if (t.dataset.cloudPlay) { const tile = t.closest("[data-cloud-tile]"); const video = tile?.querySelector("video"); if (video) { if (video.paused) video.play().catch(() => { flash("This Supabase video could not be played. Check its URL or access permissions."); }); else video.pause(); } else { const item = mediaItems.find((m) => m.id === t.dataset.cloudPlay); if (item) { const videoUrl = item.url; const old = tile?.querySelector(".cloud-mv-vp, .cloud-label-thumb"); if (old) { old.innerHTML = `<video src="${esc(videoUrl)}" muted playsinline controls autoplay preload="metadata" controlsList="nodownload" aria-label="Streaming Supabase video preview"></video>${tile.classList.contains("cloud-mv-tile") ? '<span class="cloud-tile-overlay">SUPABASE PREVIEW</span>' : ""}`; } } } }
   if (t.dataset.mediaAdd) { const item = mediaItems.find((m) => m.id === t.dataset.mediaAdd); if (item) addMediaToComposition(item); }
   if (t.dataset.compSave) { const layerId = t.dataset.compSave, row = t.closest("[data-layer-row]"); if (!row) return; const field = (k) => row.querySelector(`[data-layer-field="${k}"]`); const vals = { x: Number(field("x").value), y: Number(field("y").value), w: Number(field("w").value), h: Number(field("h").value), z: Number(field("z").value), fit: field("fit").value, visible: field("visible").checked, locked: field("locked").checked }; commit((p) => { const s = p.customScenes.find((x) => x.id === editingCompositionId), l = s?.layers.find((x) => x.id === layerId); if (!l) return; if (!l.locked || !vals.locked) { Object.assign(l, { x: vals.x, y: vals.y, w: vals.w, h: vals.h, z: vals.z }); } Object.assign(l, { fit: vals.fit, visible: vals.visible, locked: vals.locked }); }); }
   if (t.dataset.compRemove) { const layerId = t.dataset.compRemove; commit((p) => { const s = p.customScenes.find((x) => x.id === editingCompositionId); if (s) s.layers = s.layers.filter((l) => l.id !== layerId); }); }
 });
 const dlg = $("settings");
-$("openSettings").onclick = async () => { const r = await call("/api/config"); if (r.ok) { $("sLabel").value = r.body.label ?? ""; $("sUrl").value = r.body.centralUrl ?? ""; $("sMediaPath").value = r.body.mediaPath ?? "/api/media-library"; $("sKey").value = ""; $("sAuto").checked = r.body.autoUpdate !== false; $("sShare").checked = r.body.share === true; $("sKey").placeholder = r.body.keySet ? "Leave blank to keep the current key" : "Paste the station key"; } $("sMsg").textContent = ""; dlg.showModal(); };
+$("openSettings").onclick = async () => { const r = await call("/api/config"); if (r.ok) { $("sLabel").value = r.body.label ?? ""; $("sUrl").value = r.body.centralUrl ?? ""; $("sMediaPath").value = r.body.mediaPath ?? "/api/media-library"; $("sKey").value = ""; $("sPairCode").value = ""; $("sAuto").checked = r.body.autoUpdate !== false; $("sShare").checked = r.body.share === true; $("sKey").placeholder = r.body.keySet ? "Leave blank to keep the current key" : "Paste the station key"; if (r.body.secureStorage) { $("sKey").placeholder = r.body.keySet ? "Stored securely; leave blank to keep" : "Existing key (advanced only)"; } } $("sMsg").textContent = ""; dlg.showModal(); };
 $("sCancel").onclick = () => dlg.close();
-$("sSave").onclick = async (e) => { e.preventDefault(); const r = await call("/api/config", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: $("sLabel").value, centralUrl: $("sUrl").value, mediaPath: $("sMediaPath").value, stationKey: $("sKey").value, autoUpdate: $("sAuto").checked, share: $("sShare").checked }) });
+$("sSave").onclick = async (e) => { e.preventDefault(); const r = await call("/api/config", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: $("sLabel").value, centralUrl: $("sUrl").value, mediaPath: $("sMediaPath").value, stationKey: $("sKey").value, pairingCode: $("sPairCode").value.trim().toUpperCase(), autoUpdate: $("sAuto").checked, share: $("sShare").checked }) });
   if (r.ok) { dlg.close(); status = r.body; renderStatus(); loadMediaLibrary(true); } else $("sMsg").textContent = (r.body.errors ?? [r.body.error ?? "Could not save."]).join(" "); };
 setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString("en-NG"); }, 1000);
 
 await loadMap(); const r = await call("/api/programme"); if (r.ok) { rev = r.body.rev; prog = r.body.programme; fill(); render(); } pollFeed(); loadMediaLibrary(false);
 
 // ---- Secondary panels: each opens, minimises and closes on its own. Program/Preview live outside this and are never touched.
-const PANELS = { scenes: "Scenes", multiview: "Multiview Monitor", media: "Cloud Video Library", composition: "Scene Composition", graphics: "Graphics", outputs: "Outputs (OBS or vMix)", feed: "Data feed" };
-const PANEL_DEFAULT = { scenes: "open", graphics: "open", outputs: "closed", feed: "closed", multiview: "closed", media: "closed", composition: "closed" };   // optional panels start closed on a fresh session
+const PANELS = { scenes: "Scenes", multiview: "Multiview Monitor", cloudmultiview: "Supabase Media Multiview", media: "Supabase Video Library", composition: "Scene Composition", graphics: "Graphics", outputs: "Outputs (OBS or vMix)", feed: "Data feed" };
+const PANEL_DEFAULT = { scenes: "open", graphics: "open", outputs: "closed", feed: "closed", multiview: "closed", cloudmultiview: "closed", media: "closed", composition: "closed" };   // optional panels start closed on a fresh session
 let panels = (() => { try { const s = JSON.parse(localStorage.getItem("sr-panels") || "null"); const out = { ...PANEL_DEFAULT }; if (s && typeof s === "object") for (const k in PANELS) if (["open", "min", "closed"].includes(s[k])) out[k] = s[k]; return out; } catch { return { ...PANEL_DEFAULT }; } })();
 function applyPanels() {
   for (const k in PANELS) { const el = document.querySelector(`[data-panel="${k}"]`); if (!el) continue; el.classList.toggle("closed", panels[k] === "closed"); el.classList.toggle("min", panels[k] === "min"); const b = el.querySelector("[data-pmin]"); b.textContent = panels[k] === "min" ? "+" : "\u2013"; b.title = b.ariaLabel = (panels[k] === "min" ? "Restore " : "Minimize ") + PANELS[k]; }
   $("pmenub").innerHTML = Object.entries(PANELS).map(([k, n]) => `<label><input type="checkbox" data-ptoggle="${k}" ${panels[k] !== "closed" ? "checked" : ""}> ${esc(n)}</label>`).join("");
   try { localStorage.setItem("sr-panels", JSON.stringify(panels)); } catch { /* storage unavailable: layout just is not remembered */ }
+  const cmv = document.querySelector('[data-panel="cloudmultiview"]'); if (cmv) { if (panels.cloudmultiview === "open") renderCloudMultiview(); cmv.querySelectorAll("video").forEach((v) => { if (panels.cloudmultiview !== "open") v.pause(); }); }
   const mv = document.querySelector('[data-panel="multiview"]'); if (mv) { if (panels.multiview === "open") { renderMultiview(); mv.querySelectorAll("video").forEach((v) => v.play().catch(() => {})); } else mv.querySelectorAll("video").forEach((v) => v.pause()); }
 }
 document.addEventListener("click", (e) => {

@@ -18,3 +18,56 @@ test("secondary panels each have their own minimise and close controls", () => {
   for (const k of ["scenes", "graphics", "outputs", "feed"]) { const i = html.indexOf(`data-panel="${k}"`); assert.ok(i > 0, k); assert.ok(html.slice(i, i + 700).includes("data-pmin") && html.slice(i, i + 700).includes("data-pclose"), k); }
 });
 test("dialog keeps its buttons outside the scrolling body", () => { assert.match(html, /<div class="dbody">[\s\S]*<\/div><div class="dfoot"><button id="sSave"/); assert.match(css, /dialog\{[^}]*max-height:calc\(100dvh/); });
+
+test("each workspace panel scrolls independently and keeps its header visible", () => {
+  assert.match(css, /\.dock\{[^}]*max-height:min\(58vh,620px\)[^}]*overflow-y:auto[^}]*overscroll-behavior:contain/);
+  assert.match(css, /\.dh\{[^}]*position:sticky;top:0;z-index:5/);
+  assert.match(css, /\.docks\{[^}]*overscroll-behavior:contain/);
+});
+
+test("Cloud Data Multiview is a separate panel with its own grid and safe preview actions", () => {
+  assert.match(html, /data-panel="cloudmultiview"/);
+  assert.match(html, /id="cloudMultiviewGrid"/);
+  assert.match(html, /id="cloudMvRefresh"/);
+  assert.match(css, /\.cloud-multiview-grid\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  const js = readFileSync(path.join(root, "console.js"), "utf8");
+  assert.match(js, /function renderCloudMultiview\(\)/);
+  assert.match(js, /data-cloud-preview/);
+  assert.match(js, /UNVERIFIED TIME|TIME CONFLICT/);
+  assert.doesNotMatch(js, /Duration:|\.duration} sec|Resolution:/);
+  assert.match(js, /Recorded:.*formatCloudTime/);
+  assert.match(js, /Location unavailable/);
+});
+
+
+test("cloud media thumbnails never open every video and playback streams on selection", () => {
+  const js = readFileSync(path.join(root, "console.js"), "utf8");
+  assert.match(js, /Never open every Supabase video just to make thumbnails/);
+  assert.match(js, /loading="lazy" decoding="async"/);
+  assert.match(js, /preload="metadata" controlsList="nodownload"/);
+  assert.doesNotMatch(js, /function requestCloudThumbnails/);
+  assert.doesNotMatch(js, /function primeFallbackVideoFrames/);
+  assert.match(css, /\.media-item img,\.media-item video,\.media-thumb/);
+});
+
+test("Cloud Data panel supports grid and label formats without changing the cloud feed", () => {
+  assert.match(html, /id="cloudViewGrid"/); assert.match(html, /id="cloudViewLabel"/);
+  const js = readFileSync(path.join(root, "console.js"), "utf8");
+  assert.match(js, /function setCloudView\(mode\)/); assert.match(js, /localStorage\.setItem\("sr-cloud-video-view", cloudViewMode\)/);
+  assert.match(js, /cloudViewMode === "label" \? mediaItems\.slice\(0, cloudLabelLimit\) : mediaItems\.slice\(0, count\)/);
+  assert.match(html, /id="cloudMvMore"/);
+  assert.match(js, /cloudLabelLimit \+= 100/);
+  assert.match(js, /class="cloud-label-row"/); assert.match(css, /\.cloud-multiview-grid\.cloud-label-list\{display:flex;flex-direction:column/);
+  assert.match(js, /data-cloud-preview/);
+});
+
+
+
+test("Cloud Data shows title, location, recording time and timestamp verification status without duration or resolution", () => {
+  const js = readFileSync(path.join(root, "console.js"), "utf8");
+  const cloud = js.slice(js.indexOf("function renderCloudMultiview()"), js.indexOf("function uniqueSceneId"));
+  assert.match(cloud, /<h4>\$\{esc\(m\.title\)\}<\/h4>/);
+  assert.match(cloud, /formatCloudTime\(m\.recordingAt\)/);
+  assert.match(cloud, /m\.location \|\| "Location unavailable"/);
+  assert.match(cloud, /timestampStatus|VERIFIED|UNVERIFIED/i); assert.doesNotMatch(cloud, /duration|resolution|uploadAt/i);
+});

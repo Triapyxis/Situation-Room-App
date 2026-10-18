@@ -8,7 +8,7 @@ test("cloud media library uses the station key and keeps recording time separate
     res.writeHead(200, { "content-type": "application/json" });
     if (req.url === "/api/feed") return res.end(JSON.stringify({ syncedAt: "2026-10-17T08:00:00Z" }));
     if (req.url === "/api/media-library") return res.end(JSON.stringify({ items: [
-      { id: "field-1", title: "Field report", url: "https://cdn.example/field.mp4", recordingAt: "2026-10-17T07:00:00Z", uploadedAt: "2026-10-17T09:00:00Z", location: "Kano", mimeType: "video/mp4" },
+      { id: "field-1", title: "Field report", url: "https://cdn.example/field-4k.mp4", variants: [{ height: 2160, url: "https://cdn.example/field-4k.mp4" }, { height: 1080, url: "https://cdn.example/field-1080.mp4" }, { height: 720, url: "https://cdn.example/field-720.mp4" }], recordingAt: "2026-10-17T07:00:00Z", uploadedAt: "2026-10-17T09:00:00Z", location: "Kano", mimeType: "video/mp4" },
       { id: "photo-1", title: "Not a video", url: "https://cdn.example/photo.png", mimeType: "image/png" }
     ] }));
     res.writeHead(404); res.end();
@@ -21,5 +21,7 @@ test("cloud media library uses the station key and keeps recording time separate
     assert.equal(result.status, 200); assert.equal(result.body.ok, true); assert.equal(result.body.items.length, 1);
     assert.equal(result.body.items[0].recordingAt, "2026-10-17T07:00:00.000Z"); assert.equal(result.body.items[0].uploadAt, "2026-10-17T09:00:00.000Z");
     assert.equal(result.body.items[0].location, "Kano");
+    assert.equal(result.body.items[0].url, "https://cdn.example/field-1080.mp4", "prefer the highest cloud rendition at or below 1080p");
+    assert.equal(result.body.items[0].timestampStatus, "unverified", "cloud origin alone must not verify recording time");
   } finally { await app.close(); central.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

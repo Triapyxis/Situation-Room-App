@@ -1,7 +1,6 @@
 {
-  "label": "Studio laptop A",
+  "label": "National Situation Room",
   "centralUrl": "https://YOUR-SITE.vercel.app",
-  "stationKey": "sr_PASTE_THE_KEY_FROM_ADMIN_HERE",
   "mediaPath": "/api/media-library",
   "port": 4010,
   "pollSeconds": 5
