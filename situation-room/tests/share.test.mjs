@@ -13,13 +13,13 @@ test("enabling shares ONLY the output: picture data and the allow-listed files",
   const m = await feedSrv(), { a } = await boot({}, `http://127.0.0.1:${m.address().port}`); await call(a.port, "/api/config", { method: "PUT", headers: O(a.port), body: JSON.stringify({ label: "L", centralUrl: `http://127.0.0.1:${m.address().port}`, stationKey: KEY, share: true }) });
   const sh = (await call(a.port, "/api/status")).j.share; assert.equal(sh.enabled, true); const T = `/o/${sh.token}`, lan = sh.port;
   const out = await call(lan, `${T}/api/output`); assert.equal(out.s, 200); assert.equal(out.j.feed.n, 1); assert.ok(out.j.programme.live);
-  for (const f of ["output.html", "output.js", "monitor.js", "scenes.js", "styles.css", "ng-map.json"]) assert.equal((await call(lan, `${T}/${f}`)).s, 200, f);
-  for (const p of ["index.html", "console.js", "programme.js", "server.mjs", "api/config", "api/status", "api/feed", "api/programme", "api/freeze", "../server.mjs", "%2e%2e/server.mjs"]) assert.equal((await call(lan, `${T}/${p}`)).s, 404, p);
+  for (const f of ["output.html", "output.js", "monitor.js", "scenes.js", "programme.js", "styles.css", "ng-map.json"]) assert.equal((await call(lan, `${T}/${f}`)).s, 200, f);
+  for (const p of ["index.html", "console.js", "server.mjs", "api/config", "api/status", "api/feed", "api/programme", "api/freeze", "../server.mjs", "%2e%2e/server.mjs"]) assert.equal((await call(lan, `${T}/${p}`)).s, 404, p);
   await a.close(); m.close();
 });
 test("wrong, missing or malformed secrets are indistinguishable 404s with no body", async () => {
   const { a } = await boot(); await enable(a); const { token, port } = (await call(a.port, "/api/status")).j.share;
-  for (const p of ["/api/output", "/output.html", `/o/${"x".repeat(32)}/api/output`, `/o/${token.slice(0, -1)}x/api/output`, `/o/short/api/output`, `/o/${token}`, "/"]) { const r = await call(port, p); assert.equal(r.s, 404, p); assert.equal(r.t, "", p); }
+  for (const p of ["/api/output", "/output.html", `/o/${"x".repeat(32)}/api/output`, `/o/${(token[0] === "x" ? "y" : "x") + token.slice(1)}/api/output`, `/o/short/api/output`, `/o/${token}`, "/"]) { const r = await call(port, p); assert.equal(r.s, 404, p); assert.equal(r.t, "", p); }
   await a.close();
 });
 test("other computers can only READ: no writes, and the console API stays local", async () => {

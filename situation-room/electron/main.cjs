@@ -1,5 +1,7 @@
 // Desktop wrapper: one window, one local server, settings stored per Windows user. No Node.js install needed on the laptop.
-const { app, BrowserWindow, Menu, shell, dialog, clipboard } = require("electron");
+const { app, BrowserWindow, Menu, shell, dialog, clipboard, safeStorage } = require("electron");
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { setupUpdates } = require("./updater.cjs");
 const { pathToFileURL } = require("node:url");
@@ -26,6 +28,22 @@ async function boot() {
   process.env.SR_CONFIG_DIR = app.getPath("userData");                 // settings live in the user's profile, not in the read-only install folder
   const mod = await import(pathToFileURL(path.join(__dirname, "..", "server.mjs")).href);
   cfg = mod.loadConfig();
+  const credentialFile = path.join(app.getPath("userData"), "station-key.enc");
+  // Encrypt station credentials with OS-backed Electron safeStorage. Migrate any old plaintext config key.
+  if (safeStorage && safeStorage.isEncryptionAvailable()) {
+    try {
+      if (fs.existsSync(credentialFile)) {
+        cfg.stationKey = safeStorage.decryptString(fs.readFileSync(credentialFile));
+        if (fs.existsSync(cfg.configFile)) { const raw = JSON.parse(fs.readFileSync(cfg.configFile, "utf8")); if (Object.hasOwn(raw, "stationKey")) { delete raw.stationKey; await fsp.writeFile(cfg.configFile, JSON.stringify(raw, null, 2), { mode: 0o600 }); } }
+      } else if (cfg.stationKey) {
+        await fsp.writeFile(credentialFile, safeStorage.encryptString(cfg.stationKey), { mode: 0o600 });
+        const raw = JSON.parse(fs.readFileSync(cfg.configFile, "utf8")); delete raw.stationKey;
+        await fsp.writeFile(cfg.configFile, JSON.stringify(raw, null, 2), { mode: 0o600 });
+      }
+    } catch (e) { dialog.showErrorBox("Situation Room credentials", "The saved station credential could not be opened. Re-pair this laptop with a new one-time code."); }
+    cfg.secureStationKey = true;
+    cfg.persistStationKey = async (key) => { if (key) await fsp.writeFile(credentialFile, safeStorage.encryptString(key), { mode: 0o600 }); else if (fs.existsSync(credentialFile)) await fsp.unlink(credentialFile); };
+  }
   const hooks = { checkUpdates: () => updates.check(), installUpdate: () => updates.install() };
   try { server = await mod.startServer(cfg, hooks); }
   catch (e) { dialog.showErrorBox("Situation Room", e && e.code === "EADDRINUSE" ? `Port ${cfg.port} is already used by another program, possibly another copy of Situation Room. Close it and start again.` : `Could not start: ${e && e.message}`); app.quit(); return; }

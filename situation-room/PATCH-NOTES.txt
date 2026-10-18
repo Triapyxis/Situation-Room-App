@@ -1,0 +1,18 @@
+Supabase media library preparation update
+
+- Renamed the media-library panels and user-facing labels to Supabase Video Library and Supabase Media Multiview.
+- Updated Settings guidance and operator messages to describe the Supabase-backed media API.
+- Kept the existing separate cloud-data/media preview panel, Grid/Label modes, lazy thumbnail loading, independent panel scrolling, and protected Program/Preview controls.
+- Kept station-key authentication. The desktop app does not hold Supabase credentials or a service-role key; the central Election Management API must validate the station key, read metadata from Supabase, and return authorized playback URLs (preferably short-lived signed URLs for a private Storage bucket).
+- Updated README with the required API response contract and Supabase integration notes.
+- The app selects a declared playback rendition at or below 1080p. It does not transcode videos; a processing pipeline must create and register a <=1080p rendition if a hard ceiling is required.
+- Recording time continues to come from the supplied recording metadata, not upload time or the laptop clock. Unverified timestamps must not be treated as verified.
+- No Supabase schema, migrations, bucket, or central web API were changed in this desktop-only update. The actual backend connection awaits the Election Management web-app source.
+- Validation: `node --test` (70 tests passed).
+
+Version 1.0.2 — Program/Preview and control reliability
+- Fixed delegated clicks so clicking button text or nested icons triggers the intended action.
+- Serialised programme writes and retried once after a stale-revision conflict to avoid dropped rapid actions.
+- Reset stale transition animation classes when monitor layers are reused, preventing blank or stuck-looking views during quick switching.
+- Kept the Take behavior: Preview goes to Program and the previous Program returns to Preview.
+- Added regression checks for click delegation, write serialisation/conflict recovery, and transition cleanup.

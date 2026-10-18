@@ -1,5 +1,5 @@
 import test from "node:test"; import assert from "node:assert/strict"; import http from "node:http"; import os from "node:os"; import fs from "node:fs"; import path from "node:path";
-import { startServer } from "../server.mjs";
+import { startServer, validateSettings } from "../server.mjs";
 const KEY = "sr_" + "A".repeat(43), FEED = { syncedAt: "2026-10-12T10:00:00Z", election: { name: "T" }, president: null };
 const mock = () => new Promise((r) => { const s = http.createServer((q, a) => { if (q.headers.authorization !== `Bearer ${KEY}`) { a.writeHead(401); return a.end("{}"); } a.writeHead(200, { "content-type": "application/json" }); a.end(JSON.stringify(FEED)); }); s.listen(0, "127.0.0.1", () => r(s)); });
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "sr-"));
@@ -63,4 +63,11 @@ test("settings: saved to disk, key never returned, blank key keeps the old one, 
   await putCfg(a.port, { label: "Renamed", centralUrl: `http://127.0.0.1:${m.address().port}`, stationKey: NEWKEY });          // new key: old data must not linger
   const f = await get(a.port, "/api/feed"); assert.equal(f.j.feed, null); assert.equal(f.j.authError, true);
   await a.close(); m.close();
+});
+
+test("settings accepts a one-time pairing code without requiring a pre-existing station key", () => {
+  const r = validateSettings({ label: "National Room", centralUrl: "https://election.example", pairingCode: "0123456789ABCDEF" }, {});
+  assert.deepEqual(r.errors, []); assert.equal(r.values.stationKey, "");
+  const bad = validateSettings({ label: "National Room", centralUrl: "https://election.example", pairingCode: "short" }, {});
+  assert.ok(bad.errors.some((e) => e.includes("pairing code")));
 });

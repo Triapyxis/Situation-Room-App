@@ -1,5 +1,5 @@
 import test from "node:test"; import assert from "node:assert/strict";
-import { renderScene, gfxHtml } from "../public/scenes.js"; import { defaultProgramme } from "../public/programme.js";
+import { renderScene, gfxHtml } from "../public/scenes.js"; import { defaultProgramme, SCENES } from "../public/programme.js";
 const prog = defaultProgramme();
 const feed = { syncedAt: "2026-10-12T10:00:00Z", election: { name: "Test Election" },
   president: { contest: "P", totalVotes: 300, progress: { expected: 1000, reporting: 100, pending: 4, rejected: 1 }, stateLeaders: { lagos: { party: "A", colour: "#112233", votes: 5 } },
@@ -23,4 +23,20 @@ test("title and announcement use operator text, escaped", () => { const p = { ..
 test("graphics appear only when switched on", () => {
   assert.equal(gfxHtml(prog), ""); const g = { ...prog, graphics: { lower: { on: true, title: "T", sub: "S" }, ticker: { on: true, items: ["a", "b"] }, announce: { on: true, text: "N" } } };
   const h = gfxHtml(g); assert.ok(h.includes("lower") && h.includes("ticker") && h.includes("announce"));
+});
+
+test("composite scene renders multiple source types and uses recording metadata, not current time", () => {
+  const p = { ...defaultProgramme(), customScenes: [{ id: "comp_test", name: "Grid", background: "#071a25", layers: [
+    { id: "vid_a", type: "video", label: "Field report", url: "https://cdn.example/field.mp4", recordingAt: "2026-10-17T08:00:00Z", uploadAt: "2026-10-17T10:00:00Z", location: "Kano", x: 0, y: 0, w: 50, h: 100, z: 0, visible: true },
+    { id: "txt_a", type: "text", text: "Verified results", x: 50, y: 0, w: 50, h: 30, z: 1, visible: true }
+  ] }] };
+  const h = renderScene("comp_test", feed, p);
+  assert.match(h, /cdn\.example\/field\.mp4/); assert.match(h, /Recording time unavailable|17 Oct 2026/); assert.match(h, /Kano/); assert.match(h, /Verified results/); assert.match(h, /data-layer-id="vid_a"/);
+});
+
+test("every registered scene renders visible markup even before the feed arrives", () => {
+  for (const id of Object.keys(SCENES)) assert.match(renderScene(id, null, prog), /class="sc"/, `scene ${id} should render`);
+});
+test("an unavailable scene renders a visible recovery message instead of a blank preview", () => {
+  assert.match(renderScene("missing-view", null, prog), /View unavailable/);
 });
