@@ -50,22 +50,12 @@ export class Monitor {
     }
     setTimeout(() => { incoming.classList.remove(...["fx-fade", "fx-fade-black", "fx-fade-color", "fx-slide", "fx-push", "fx-wipe", "fx-zoom", "fx-morph", "fx-stinger", "dir-left", "dir-right", "dir-up", "dir-down"]); incoming.style.removeProperty("--transition-ms"); }, d + 80);
   }
-  _clearTransition(el) {
-    if (!el) return;
-    el.classList.remove("fx-fade", "fx-fade-black", "fx-fade-color", "fx-slide", "fx-push", "fx-wipe", "fx-zoom", "fx-morph", "fx-stinger", "dir-left", "dir-right", "dir-up", "dir-down");
-    el.style.removeProperty("--transition-ms"); el.style.removeProperty("--transition-color");
-    el.style.animation = "none";
-    // Force the animation reset before this layer is reused for another scene.
-    void el.offsetWidth;
-    el.style.removeProperty("animation");
-  }
   update({ scene, via = "fade", ms = 600, feed, prog }) {
     this.lastProg = prog;
     if (this.layer !== "overlay") {
       const html = renderScene(scene, feed, prog);
       if (scene !== this.scene) {
         const next = this.cur === "a" ? "b" : "a", nel = this[next], oel = this.scene === null ? null : this[this.cur];
-        this._clearTransition(nel); this._clearTransition(oel);
         nel.innerHTML = html; this.html[next] = html; nel.style.transition = "none"; nel.classList.remove("on");
         // Layout is measured after insertion, then the selected transition is applied.
         nel.getBoundingClientRect(); this._transition(oel, nel, via, ms, prog); this.cur = next; this.scene = scene;

@@ -85,7 +85,7 @@ export function renderScene(id, f, prog, depth = 0) {
     case "progress": return progress(f); case "projection": return projection(f);
     case "announce": return `<div class="sc"><div class="center"><h1 style="font-size:84px;text-align:center;max-width:1500px">${esc(prog?.graphics?.announce?.text || "")}</h1></div></div>`;
     case "closing": return `<div class="sc"><div class="center"><div class="eb">Thank you for watching</div><h1 style="font-size:100px">${esc(b.title)}</h1></div></div>`;
-    default: return `<div class="sc"><div class="center"><h1>View unavailable</h1><div class="cap">This view is not registered or its composition is missing. Select another scene or restore the missing composition.</div></div></div>`;
+    default: return `<div class="sc"></div>`;
   }
 }
 export function gfxHtml(prog) {

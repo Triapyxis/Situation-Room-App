@@ -1,35 +1,17 @@
 import { SCENES, take } from "./programme.js"; import { Monitor } from "./monitor.js"; import { loadMap } from "./scenes.js";
 const $ = (id) => document.getElementById(id), esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 let rev = 0, prog = null, feed = null, programFeed = null, status = null, mediaItems = [], mediaError = "", editingCompositionId = "", mvInstances = new Map(), mvSetupKey = "", compRenderKey = "", mediaRenderKey = "", cloudMvRenderKey = "", cloudViewMode = "grid", cloudLabelLimit = 100;
-let commitQueue = Promise.resolve();
 try { cloudViewMode = localStorage.getItem("sr-cloud-video-view") === "label" ? "label" : "grid"; } catch {}
 // feed: live (Preview); programFeed: what is on air (frozen or live)
 const prev = new Monitor($("mPrev"), { gfx: false }), live = new Monitor($("mLive"));
 const call = async (url, opt) => { try { const r = await fetch(url, opt); return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }; } catch { return { ok: false, status: 0, body: {} }; } };
 
 function fill() { if (!prog) return; const g = prog.graphics; $("l3t").value = g.lower.title; $("l3s").value = g.lower.sub; $("tki").value = g.ticker.items.join("\n"); $("ann").value = g.announce.text; $("bt").value = prog.branding.title; $("be").value = prog.branding.election; $("ttype").value = prog.transition.type; $("tms").value = prog.transition.ms; $("tdir").value = prog.transition.direction || "left"; $("tcolor").value = prog.transition.color || "#000000"; $("tstinger").value = prog.transition.stingerUrl || ""; $("videoTsOn").checked = g.videoTimestamp !== false; $("videoLocOn").checked = g.videoLocation !== false; $("videoTimezone").value = g.videoTimezone || "Africa/Lagos"; }
-function commit(fn) {
-  // Serialize every write. Fast repeated clicks must not send the same revision
-  // concurrently and silently discard one of the user's actions.
-  const run = async () => {
-    if (!prog) return;
-    let next = structuredClone(prog); fn(next);
-    let r = await call("/api/programme", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ rev, programme: next }) });
-    // Another window may have changed the programme. Adopt its latest revision,
-    // re-apply this user's action, and retry once rather than dropping the action.
-    if (r.status === 409 && r.body?.programme && Number.isFinite(r.body.rev)) {
-      rev = r.body.rev; prog = r.body.programme;
-      next = structuredClone(prog); fn(next);
-      r = await call("/api/programme", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ rev, programme: next }) });
-    }
-    if (r.ok && r.body?.programme) { rev = r.body.rev; prog = r.body.programme; }
-    else if (r.status === 409 && r.body?.programme) { rev = r.body.rev; prog = r.body.programme; fill(); flash("Programme changed in another window. Your latest action was not saved; try again."); }
-    else flash("Could not save. Is the app still running?");
-    render();
-  };
-  const task = commitQueue.then(run, run);
-  commitQueue = task.catch((err) => { console.error("Programme update failed", err); flash("An unexpected error interrupted that action. Please try again."); });
-  return commitQueue;
+async function commit(fn) {
+  if (!prog) return; const next = structuredClone(prog); fn(next);
+  const r = await call("/api/programme", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ rev, programme: next }) });
+  if (r.ok || r.status === 409) { rev = r.body.rev; prog = r.body.programme; if (r.status === 409) fill(); } else flash("Could not save. Is the app still running?");
+  render();
 }
 function flash(m) { const el = $("conn"); el.textContent = m; el.className = "pill bad"; }
 const doTake = (via) => commit((p) => { const t = take(p, via ?? p.transition.type); p.live = t.live; p.preview = t.preview; });
@@ -170,10 +152,7 @@ async function pollFeed() { await pullFeed(); setTimeout(pollFeed, 2000); }
 async function toggleFreeze() { if (!status) return; const r = await call("/api/freeze", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ on: !status.frozenAt }) }); if (!r.ok) flash(r.body.error ?? "Could not change freeze"); await pullFeed(); }
 
 document.addEventListener("click", (e) => {
-  // Resolve nested spans/icons back to the actionable element. Using e.target
-  // directly made buttons appear intermittent whenever their child was clicked.
-  const t = e.target.closest("button, a, [data-g], [data-copy], [data-share], [data-upd]") || e.target;
-  if (t.closest("#scenes li")) { const id = t.closest("li").dataset.id; commit((p) => { p.preview.scene = id; }); }
+  const t = e.target; if (t.closest("#scenes li")) { const id = t.closest("li").dataset.id; commit((p) => { p.preview.scene = id; }); }
   if (t.dataset.copy) navigator.clipboard?.writeText(t.dataset.copy);
   if (t.dataset.share === "regen" && confirm("Make a new address?\n\nThe old addresses stop working immediately. You will need to update the Browser source in OBS.")) call("/api/share/regenerate", { method: "POST" }).then(pullFeed);
   if (t.dataset.upd === "check") call("/api/update/check", { method: "POST" });
@@ -211,7 +190,7 @@ $("compPreview").onclick = () => { if (editingCompositionId) commit((p) => { p.p
 $("compDelete").onclick = () => { const id = editingCompositionId; if (!id || !confirm("Delete this composition? This cannot be undone.")) return; editingCompositionId = ""; commit((p) => { p.customScenes = p.customScenes.filter((s) => s.id !== id); if (p.preview.scene === id) p.preview.scene = "national"; if (p.live.scene === id) p.live.scene = "title"; }); };
 document.addEventListener("change", (e) => { const sel = e.target.closest("[data-mv-scene]"); if (!sel) return; const i = Number(sel.dataset.mvScene), inst = mvInstances.get(i); if (inst) inst.scene = sel.value; renderMultiview(); });
 document.addEventListener("click", (e) => {
-  const t = e.target.closest("[data-mv-preview], [data-media-load], [data-cloud-preview], [data-cloud-play], [data-media-add], [data-comp-save], [data-comp-remove]") || e.target;
+  const t = e.target;
   if (t.dataset.mvPreview !== undefined) { const inst = mvInstances.get(Number(t.dataset.mvPreview)); if (inst) commit((p) => { p.preview.scene = inst.scene; }); }
   if (t.dataset.mediaLoad) { const item = mediaItems.find((m) => m.id === t.dataset.mediaLoad); if (item) loadMediaScene(item); }
   if (t.dataset.cloudPreview) { const item = mediaItems.find((m) => m.id === t.dataset.cloudPreview); if (item) loadMediaScene(item); }
